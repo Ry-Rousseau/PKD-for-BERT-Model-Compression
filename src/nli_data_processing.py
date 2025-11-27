@@ -66,7 +66,7 @@ class DataProcessor(object):
     @classmethod
     def _read_tsv(cls, input_file, quotechar=None):
         """Reads a tab separated value file."""
-        with open(input_file, "r") as f:
+        with open(input_file, "r", encoding="utf-8", errors="ignore") as f:
             reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
             lines = []
             for line in reader:
@@ -464,6 +464,50 @@ class WnliProcessor(DataProcessor):
         return examples
 
 
+class LegalProcessor(DataProcessor):
+    """Processor for the Legal data set (3-column TSV format)."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            if len(line) < 3:
+                logger.warning(f"Skipping malformed line {i}: {line}")
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[1]
+            text_b = None
+            if set_type != 'test':
+                raw_label = line[2]
+                label = "1" if raw_label.lower() == "true" else "0"
+            else:
+                label = self.get_labels()[0]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+
 def convert_examples_to_features(examples, label_list, max_seq_length,
                                  tokenizer, output_mode):
     """Loads a data file into a list of `InputBatch`s."""
@@ -600,6 +644,8 @@ def compute_metrics(task_name, preds, labels):
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "wnli":
         return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "legal":
+        return {"acc": simple_accuracy(preds, labels)}
     else:
         raise KeyError(task_name)
 
@@ -615,6 +661,7 @@ processors = {
     "qnli": QnliProcessor,
     "rte": RteProcessor,
     "wnli": WnliProcessor,
+    "legal": LegalProcessor,
 }
 
 output_modes = {
@@ -628,6 +675,7 @@ output_modes = {
     "qnli": "classification",
     "rte": "classification",
     "wnli": "classification",
+    "legal": "classification",
 }
 
 
@@ -710,7 +758,7 @@ def find_eval_res_task_subdir(task, kd_folder, sub_dir):
     for f in all_files:
         fbase = os.path.basename(f)
         try:
-            res = pd.read_csv(os.path.join(f, 'eval_log.txt'), sep=',|\s+')
+            res = pd.read_csv(os.path.join(f, 'eval_log.txt'), sep=r',|\s+')
         except:
             print(f'opening {f} failed!')
             continue

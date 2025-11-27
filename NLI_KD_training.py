@@ -12,7 +12,7 @@ from BERT.pytorch_pretrained_bert.modeling import BertConfig
 from BERT.pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 from BERT.pytorch_pretrained_bert.tokenization import BertTokenizer
 
-from src.argument_parser import default_parser, get_predefine_argv, complete_argument
+from src.argument_parser import default_parser, get_predefine_argv, complete_argument, get_legal_teacher_argv
 from src.nli_data_processing import processors, output_modes
 from src.data_processing import init_model, get_task_dataloader
 from src.modeling import BertForSequenceClassificationEncoder, FCClassifierForSequenceClassification, FullFCClassifierForSequenceClassification
@@ -44,6 +44,13 @@ if DEBUG:
 
     # run Patient Teacher by uncommenting below cmd
     # argv = get_predefine_argv('glue', 'RTE', 'kd.cls')
+
+    # run Legal BERT Base teacher fine-tuning by uncommenting below cmd
+    # argv = get_legal_teacher_argv('legal-bert-base')
+
+    # run Legal BERT Small teacher fine-tuning by uncommenting below cmd
+    # argv = get_legal_teacher_argv('legal-bert-small')
+
     try:
         args = parser.parse_args(argv)
     except NameError:

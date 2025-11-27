@@ -268,3 +268,44 @@ def get_predefine_argv(mode='glue', task_name='RTE', train_type='kd'):
     else:
         raise NotImplementedError('training mode %s has not been implemented yet' % mode)
     return argv
+
+
+def get_legal_teacher_argv(model_name='legal-bert-base'):
+    """
+    Get arguments for fine-tuning legal BERT teacher models on legal dataset
+    :param model_name: either 'legal-bert-base' or 'legal-bert-small'
+    :return: argument list for teacher fine-tuning
+    """
+    # Determine model-specific parameters
+    if model_name == 'legal-bert-base':
+        hidden_layers = 12
+        batch_size = 8  # Smaller batch for larger model
+        learning_rate = '2e-5'
+        output_suffix = 'base'
+    elif model_name == 'legal-bert-small':
+        hidden_layers = 6
+        batch_size = 16  # Larger batch for smaller model
+        learning_rate = '2e-5'
+        output_suffix = 'small'
+    else:
+        raise ValueError(f"Unknown model_name: {model_name}")
+
+    argv = [
+        '--task_name', 'legal',
+        '--bert_model', f'models/{model_name}',
+        '--max_seq_length', '512',  # Legal documents can be long
+        '--train_batch_size', str(batch_size),
+        '--learning_rate', learning_rate,
+        '--num_train_epochs', '3',
+        '--eval_batch_size', '32',
+        '--gradient_accumulation_steps', '1',
+        '--log_every_step', '50',
+        '--output_dir', os.path.join(HOME_DATA_FOLDER, f'outputs/legal/{model_name}-teacher'),
+        '--do_train', 'True',
+        '--do_eval', 'True',
+        '--fp16', 'False',  # Start with fp32 for stability
+        '--student_hidden_layers', str(hidden_layers),
+        '--kd_model', 'kd',
+        '--alpha', '0.0',  # Pure fine-tuning, no distillation
+    ]
+    return argv
