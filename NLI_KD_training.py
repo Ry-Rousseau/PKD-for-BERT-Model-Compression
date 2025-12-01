@@ -338,6 +338,10 @@ if args.do_train:
                                                        tr_ce_loss / nb_tr_examples, tr_loss_pt / nb_tr_examples),
                       file=log_train)
 
+        result = eval_model_dataloader_nli(args.task_name.lower(), eval_label_ids, student_encoder, student_classifier, eval_dataloader,
+                                            args.kd_model, num_labels, device, args.weights, args.fc_layer_idx, output_mode,
+                                            set_name="DEV")
+        
         # ============================================================
         # EVALUATE ON DEV SET (Validation) - After Each Epoch
         # This runs after every epoch to monitor training progress
@@ -346,23 +350,42 @@ if args.do_train:
         logger.info(f">>> EPOCH {epoch+1} - EVALUATING ON DEV SET (Validation) <<<")
         logger.info("=" * 80)
 
-        if 'race' in task_name:
-            result = eval_model_dataloader(student_encoder, student_classifier, eval_dataloader, device, False)
+         # ============================================================
+        # EARLY STOPPING - Track best DEV performance
+        # ============================================================
+        if epoch == 0:
+            best_dev_acc = result['acc']
+            best_dev_loss = result['eval_loss']
+            best_epoch = epoch
+            patience_counter = 0
+            patience_limit = 3  # Stop if no improvement for 3 epochs
+            logger.info(f"✓ Initialized best DEV accuracy: {best_dev_acc:.4f}")
         else:
-            result = eval_model_dataloader_nli(args.task_name.lower(), eval_label_ids, student_encoder, student_classifier, eval_dataloader,
-                                               args.kd_model, num_labels, device, args.weights, args.fc_layer_idx, output_mode,
-                                               set_name="DEV")
+            # Check if this epoch improved
+            if result['acc'] > best_dev_acc:
+                best_dev_acc = result['acc']
+                best_dev_loss = result['eval_loss']
+                best_epoch = epoch
+                patience_counter = 0
+                logger.info(f"✓✓✓ NEW BEST DEV ACCURACY: {best_dev_acc:.4f} (epoch {epoch+1}) ✓✓✓")
+            else:
+                patience_counter += 1
+                gap = best_dev_acc - result['acc']
+                logger.info(f"⚠ No improvement for {patience_counter} epoch(s). Current: {result['acc']:.4f}, Best: {best_dev_acc:.4f} (gap: {gap:.4f})")
+                
+                if patience_counter >= patience_limit:
+                    logger.info("=" * 80)
+                    logger.info(f"🛑 EARLY STOPPING TRIGGERED!")
+                    logger.info(f"   Best epoch: {best_epoch+1} with DEV accuracy {best_dev_acc:.4f}")
+                    logger.info(f"   No improvement for {patience_limit} consecutive epochs")
+                    logger.info("=" * 80)
+                    break  # Exit training loop
+        
 
         logger.info(f"DEV SET Results (Epoch {epoch+1}): Accuracy = {result['acc']:.4f}, Loss = {result['eval_loss']:.4f}")
         logger.info("=" * 80)
 
-        if args.task_name in ['CoLA']:
-            print('{},{},{}'.format(epoch+1, result['mcc'], result['eval_loss']), file=log_eval)
-        else:
-            if 'race' in args.task_name:
-                print('{},{},{}'.format(epoch+1, result['acc'], result['loss']), file=log_eval)
-            else:
-                print('{},{},{}'.format(epoch+1, result['acc'], result['eval_loss']), file=log_eval)
+        print('{},{},{}'.format(epoch+1, result['acc'], result['eval_loss']), file=log_eval)
 
         # Save a trained model and the associated configuration
 

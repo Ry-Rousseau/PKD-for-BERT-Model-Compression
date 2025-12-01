@@ -241,7 +241,7 @@ def get_predefine_argv(task_name='justice_legal_dataset', model_name='legal-bert
         '--max_seq_length', '512',  # Legal documents can be long
         '--train_batch_size', str(batch_size),
         '--learning_rate', learning_rate, # default learning rate for all models/tasks
-        '--num_train_epochs', '12',
+        '--num_train_epochs', '8',
         '--eval_batch_size', '32',
         '--gradient_accumulation_steps', '1',
         '--log_every_step', '50',
