@@ -66,12 +66,10 @@ class DataProcessor(object):
     @classmethod
     def _read_tsv(cls, input_file, quotechar=None):
         """Reads a tab separated value file."""
-        with open(input_file, "r") as f:
+        with open(input_file, "r", encoding = 'utf-8') as f:
             reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
             lines = []
             for line in reader:
-                if sys.version_info[0] == 2:
-                    line = list(unicode(cell, 'utf-8') for cell in line)
                 lines.append(line)
             return lines
 
@@ -100,18 +98,34 @@ class MrpcProcessor(DataProcessor):
         return ["0", "1"]
 
     def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
+        """Creates examples for the training, dev, and test sets."""
         examples = []
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
-            guid = "%s-%s" % (set_type, i)
-            text_a = line[3]
-            text_b = line[4]
-            if set_type == 'test':
-                label = self.get_labels()[0]
+            
+            # 1. Standard Column Parsing
+            guid = "%s-%s" % (set_type, line[0]) 
+            text_a = line[1]                     
+            text_b = None                        
+            
+            # 2. Universal Label Parsing (Now applies to TEST too)
+            # We read line[2] for ALL sets, including 'test'
+            label_raw = line[2]
+            
+            if label_raw == "True":
+                label = "1"
+            elif label_raw == "False":
+                label = "0"
+            elif label_raw == "1":
+                label = "1"
+            elif label_raw == "0":
+                label = "0"
             else:
-                label = line[0]
+                # Fallback for unexpected values
+                # print(f"Warning: Unknown label {label_raw} in {set_type} row {i}")
+                label = self.get_labels()[0] 
+
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
@@ -464,6 +478,58 @@ class WnliProcessor(DataProcessor):
         return examples
 
 
+class LegalProcessor(DataProcessor):
+    """Processor for the Legal data set (custom binary classification)."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv"), quotechar='"'), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv"), quotechar='"'), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.tsv"), quotechar='"'), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0: continue
+            guid = "%s-%s" % (set_type, line[0])
+            text_a = line[1]
+
+            # Read label from column 2 for ALL sets (train, dev, AND test)
+            # Unlike GLUE tasks, our custom dataset has real labels in test set
+            label_raw = line[2]
+
+            # Convert "True"/"False" strings to "1"/"0" labels
+            if label_raw == "True":
+                label = "1"
+            elif label_raw == "False":
+                label = "0"
+            # Fallbacks for numeric strings
+            elif label_raw == "1":
+                label = "1"
+            elif label_raw == "0":
+                label = "0"
+            else:
+                # Default to majority class if unknown
+                logger.warning(f"Unknown label '{label_raw}' in {set_type} set at row {i}, defaulting to '1'")
+                label = "1"
+
+            examples.append(InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+        return examples
+
+
 def convert_examples_to_features(examples, label_list, max_seq_length,
                                  tokenizer, output_mode):
     """Loads a data file into a list of `InputBatch`s."""
@@ -600,6 +666,8 @@ def compute_metrics(task_name, preds, labels):
         return {"acc": simple_accuracy(preds, labels)}
     elif task_name == "wnli":
         return {"acc": simple_accuracy(preds, labels)}
+    elif task_name == "justice_legal_dataset":
+        return acc_and_f1(preds, labels)
     else:
         raise KeyError(task_name)
 
@@ -615,6 +683,7 @@ processors = {
     "qnli": QnliProcessor,
     "rte": RteProcessor,
     "wnli": WnliProcessor,
+    "justice_legal_dataset": LegalProcessor,
 }
 
 output_modes = {
@@ -628,6 +697,7 @@ output_modes = {
     "qnli": "classification",
     "rte": "classification",
     "wnli": "classification",
+    "justice_legal_dataset": "classification",
 }
 
 
@@ -715,7 +785,7 @@ def find_eval_res_task_subdir(task, kd_folder, sub_dir):
             print(f'opening {f} failed!')
             continue
 
-        if 1(res) == 0:
+        if len(res) == 0:
             print(f'results in {f} are missing!')
             continue
 

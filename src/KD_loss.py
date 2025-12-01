@@ -14,7 +14,11 @@ def distillation_loss(y, labels, teacher_scores, T, alpha, reduction_kd='mean', 
     else:
         assert alpha == 0, 'alpha cannot be {} when teacher scores are not provided'.format(alpha)
         d_loss = 0.0
-    nll_loss = F.cross_entropy(y, labels, reduction=reduction_nll)
+    
+    class_weights = torch.tensor([4.0, 1.0], device=y.device, dtype=y.dtype)
+
+    
+    nll_loss = F.cross_entropy(y, labels, weight=class_weights, reduction=reduction_nll)
     # print(d_loss.shape, d_loss)
     # print('\n', nll_loss.shape, nll_loss)
     tol_loss = alpha * d_loss + (1.0 - alpha) * nll_loss

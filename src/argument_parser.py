@@ -206,106 +206,135 @@ def complete_argument(args):
 
     return args
 
-
-def get_predefine_argv(mode='glue', task_name='RTE', train_type='kd'):
+# Modified version of the original
+def get_predefine_argv(task_name='justice_legal_dataset', model_name='legal-bert-base', train_type='finetune_teacher', student_layers=12):
     """
     the function return some pre-defined arguments for argument parser
-    :param mode:  can only be 'glue' for now
-    :param task_name:  one of the task name under glue
-    :param train_type: could be 'finetune', 'kd' or 'kd.cls'
-    :return:
+    :param task_name:  the task name (e.g. 'legal') 
+    :param model_name: either 'legal-bert-base' or 'legal-bert-small' or 'bert-base-uncased'
+    :param train_type: ('finetune_teacher', 'finetune_student', 'kd', 'kd.cls')
+    :param student_layers: The target number of layers for the student model (e.g., 3, 6).
+    :return: List of arguments
     """
-    if mode == 'race':
-        raise NotImplementedError('Please run glue for now')
-    elif mode == 'glue':
-        argv = [
-                '--task_name', task_name,
-                '--bert_model', 'bert-base-uncased',
-                '--max_seq_length', '128',
-                '--train_batch_size', '32',
-                '--learning_rate', '2e-5',
-                '--num_train_epochs', '4',
-                '--eval_batch_size', '32',
-                '--gradient_accumulation_steps', '1',
-                '--log_every_step', '1',
-                '--output_dir', os.path.join(HOME_DATA_FOLDER, f'outputs/KD/{task_name}/teacher_12layer'),
-                '--do_train', 'True',
-                '--do_eval', 'True',
-                '--fp16', 'True',
-            ]
-        if train_type == 'finetune_teacher':
-            argv += [
-                '--student_hidden_layers', '12',
-                '--kd_model', 'kd',
-                '--alpha', '0.0',    # alpha = 0 is equivalent to fine-tuning for KD
-            ]
-        if train_type == 'finetune_student':
-            argv += [
-                '--student_hidden_layers', '6',
-                '--kd_model', 'kd',
-                '--alpha', '0.0',
-            ]
-        elif train_type == 'kd':
-            argv += [
-                '--student_hidden_layers', '6',
-                '--kd_model', 'kd',
-                '--alpha', '0.7',
-                '--T', '20',
-                '--teacher_prediction', f'/home/JJteam/Project/PatientTeacherforBERT/data/outputs/KD/{task_name}/{task_name}_normal_kd_teacher_12layer_result_summary.pkl',
-            ]
-        elif train_type == 'kd.cls':
-            argv += [
-                '--learning_rate', '1e-5',
-                '--student_hidden_layers', '6',
-                '--kd_model', 'kd.cls',
-                '--alpha', '0.7',
-                '--beta', '500',
-                '--T', '10',
-                '--teacher_prediction', f'/home/JJteam/Project/PatientTeacherforBERT/data/outputs/KD/{task_name}/{task_name}_patient_kd_teacher_12layer_result_summary.pkl',
-                '--fc_layer_idx', '1,3,5,7,9',   # this for pkd-skip
-                '--normalize_patience', 'True',
-            ]
-    else:
-        raise NotImplementedError('training mode %s has not been implemented yet' % mode)
-    return argv
-
-
-def get_legal_teacher_argv(model_name='legal-bert-base'):
-    """
-    Get arguments for fine-tuning legal BERT teacher models on legal dataset
-    :param model_name: either 'legal-bert-base' or 'legal-bert-small'
-    :return: argument list for teacher fine-tuning
-    """
-    # Determine model-specific parameters
+    
+    # Determine teacher-specific parameters
+    # Hyperparameters below need to be optimized, choosing some sensible defaults for first implementation
     if model_name == 'legal-bert-base':
         hidden_layers = 12
-        batch_size = 8  # Smaller batch for larger model
-        learning_rate = '2e-5'
-        output_suffix = 'base'
+        batch_size = 16 
+        learning_rate = '1e-5'
     elif model_name == 'legal-bert-small':
         hidden_layers = 6
-        batch_size = 16  # Larger batch for smaller model
+        batch_size = 16 
         learning_rate = '2e-5'
-        output_suffix = 'small'
+    elif model_name == 'bert-base-uncased':
+        hidden_layers = 12
+        batch_size = 16 
+        learning_rate = '2e-5'
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
-
+    
+    # Set standard arguments 
     argv = [
-        '--task_name', 'legal',
-        '--bert_model', f'models/{model_name}',
+        '--task_name', task_name,
+        '--bert_model', model_name,
         '--max_seq_length', '512',  # Legal documents can be long
         '--train_batch_size', str(batch_size),
-        '--learning_rate', learning_rate,
-        '--num_train_epochs', '3',
+        '--learning_rate', learning_rate, # default learning rate for all models/tasks
+        '--num_train_epochs', '12',
         '--eval_batch_size', '32',
         '--gradient_accumulation_steps', '1',
         '--log_every_step', '50',
         '--output_dir', os.path.join(HOME_DATA_FOLDER, f'outputs/legal/{model_name}-teacher'),
         '--do_train', 'True',
         '--do_eval', 'True',
-        '--fp16', 'False',  # Start with fp32 for stability
-        '--student_hidden_layers', str(hidden_layers),
-        '--kd_model', 'kd',
-        '--alpha', '0.0',  # Pure fine-tuning, no distillation
-    ]
+        '--fp16', 'True',
+        ]
+    
+    if student_layers > hidden_layers:
+        raise ValueError(f"Student layers larger than input hidden layers, impossible distillation")
+    
+    if train_type == 'finetune_teacher':
+        argv += [
+            '--student_hidden_layers', str(hidden_layers), # student layers = teacher layers
+            '--kd_model', 'kd',
+            '--alpha', '0.0',    # alpha = 0 is equivalent to fine-tuning for KD
+        ]
+    elif train_type == 'finetune_student':
+        argv += [
+            '--student_hidden_layers', str(student_layers), 
+            '--kd_model', 'kd',
+            '--alpha', '0.0',
+        ]
+    elif train_type == 'kd':
+        argv += [
+            '--student_hidden_layers', str(student_layers),
+            '--kd_model', 'kd',
+            '--alpha', '0.7', # To be modified/optimized
+            '--T', '20', # To be modified/optimized
+            '--teacher_prediction', f'.data/outputs/legal/{task_name}/{model_name}_NORMAL_kd_teacher_{hidden_layers}layer_result_summary.pkl_normal_kd_teacher_12layer_result_summary.pkl',
+        ]
+    elif train_type == 'kd.cls':
+        argv += [
+            '--learning_rate', '1e-5',
+            '--student_hidden_layers', str(hidden_layers),
+            '--kd_model', 'kd.cls',
+            '--alpha', '0.7',
+            '--beta', '500',
+            '--T', '10',
+            '--teacher_prediction', f'.data/outputs/legal/{task_name}/{model_name}_PATIENT_kd_teacher_{hidden_layers}layer_result_summary.pkl_normal_kd_teacher_12layer_result_summary.pkl',
+            '--fc_layer_idx', '1,3,5,7,9',   # layers for pkd-skip - Look at this later again, ensure it's correct
+            '--normalize_patience', 'True',
+        ]
+            
+    else:
+        raise NotImplementedError('training mode %s has not been implemented yet' % train_type)
+    
+    # Check if a model checkpoint needs to be added for student runs    
+    if train_type in ['finetune_student', 'kd', 'kd.cls']:
+        # Assuming finetune/KD a student model initialized with model_name weights
+        argv.extend(['--encoder_checkpoint', f'pretrained/{model_name}/pytorch_model.bin'])
     return argv
+
+
+
+
+# def get_legal_teacher_argv(model_name='legal-bert-base'):
+#     """
+#     Get arguments for fine-tuning legal BERT teacher models on legal dataset
+#     :param model_name: either 'legal-bert-base' or 'legal-bert-small'
+#     :return: argument list for teacher fine-tuning
+#     """
+#     # Determine model-specific parameters
+#     if model_name == 'legal-bert-base':
+#         hidden_layers = 12
+#         batch_size = 8  # Smaller batch for larger model
+#         learning_rate = '2e-5'
+#         output_suffix = 'base'
+#     elif model_name == 'legal-bert-small':
+#         hidden_layers = 6
+#         batch_size = 16  # Larger batch for smaller model
+#         learning_rate = '2e-5'
+#         output_suffix = 'small'
+#     else:
+#         raise ValueError(f"Unknown model_name: {model_name}")
+
+#     argv = [
+#         '--task_name', 'legal',
+#         '--bert_model', f'models/{model_name}',
+#         '--max_seq_length', '512',  # Legal documents can be long
+#         '--train_batch_size', str(batch_size),
+#         '--learning_rate', learning_rate,
+#         '--num_train_epochs', '3',
+#         '--eval_batch_size', '32',
+#         '--gradient_accumulation_steps', '1',
+#         '--log_every_step', '50',
+#         '--output_dir', os.path.join(HOME_DATA_FOLDER, f'outputs/legal/{model_name}-teacher'),
+#         '--do_train', 'True',
+#         '--do_eval', 'True',
+#         '--fp16', 'False',  # Start with fp32 for stability
+#         '--student_hidden_layers', str(hidden_layers),
+#         '--kd_model', 'kd',
+#         '--alpha', '0.0',  # Pure fine-tuning, no distillation
+#     ]
+#     return argv

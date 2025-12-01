@@ -12,7 +12,9 @@ from BERT.pytorch_pretrained_bert.modeling import BertConfig
 from BERT.pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 from BERT.pytorch_pretrained_bert.tokenization import BertTokenizer
 
-from src.argument_parser import default_parser, get_predefine_argv, complete_argument, get_legal_teacher_argv
+from torch.amp import autocast, GradScaler # modern mixed precision from pytorch, replacing APEX
+
+from src.argument_parser import default_parser, get_predefine_argv, complete_argument
 from src.nli_data_processing import processors, output_modes
 from src.data_processing import init_model, get_task_dataloader
 from src.modeling import BertForSequenceClassificationEncoder, FCClassifierForSequenceClassification, FullFCClassifierForSequenceClassification
@@ -34,23 +36,7 @@ DEBUG = True
 if DEBUG:
     logger.info("IN DEBUG MODE")
     # run simple fune-tuning *teacher* by uncommenting below cmd
-    # argv = get_predefine_argv('glue', 'RTE', 'finetune_teacher')
-
-    # run simple fune-tuning *student* by uncommenting below cmd
-    # argv = get_predefine_argv('glue', 'RTE', 'finetune_student')
-
-    # run vanilla KD by uncommenting below cmd
-    # argv = get_predefine_argv('glue', 'RTE', 'kd')
-
-    # run Patient Teacher by uncommenting below cmd
-    # argv = get_predefine_argv('glue', 'RTE', 'kd.cls')
-
-    # run Legal BERT Base teacher fine-tuning by uncommenting below cmd
-    # argv = get_legal_teacher_argv('legal-bert-base')
-
-    # run Legal BERT Small teacher fine-tuning by uncommenting below cmd
-    # argv = get_legal_teacher_argv('legal-bert-small')
-
+    argv = get_predefine_argv('justice_legal_dataset', 'legal-bert-base', 'finetune_teacher', 12)
     try:
         args = parser.parse_args(argv)
     except NameError:
@@ -60,8 +46,9 @@ else:
     args = parser.parse_args()
 args = complete_argument(args)
 
+
 args.raw_data_dir = os.path.join(HOME_DATA_FOLDER, 'data_raw', args.task_name)
-args.feat_data_dir = os.path.join(HOME_DATA_FOLDER, 'data_feat', args.task_name)
+# args.feat_data_dir = os.path.join(HOME_DATA_FOLDER, 'data_feat', args.task_name)
 
 args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 logger.info('actual batch size on all GPU = %d' % args.train_batch_size)
@@ -83,7 +70,7 @@ for a in args_dict:
 ##########################################################################
 task_name = args.task_name.lower()
 
-if task_name not in processors and 'race' not in task_name:
+if task_name not in processors:
     raise ValueError("Task not found: %s" % (task_name))
 
 if 'race' in task_name:
@@ -196,29 +183,45 @@ if args.do_train:
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
-    if args.fp16:
-        logger.info('FP16 activate, use apex FusedAdam')
-        try:
-            from apex.optimizers import FP16_Optimizer
-            from apex.optimizers import FusedAdam
-        except ImportError:
-            raise ImportError(
-                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+    # if args.fp16: REDUNDANT SINCE MODERN TORCH APPROACH AVAILABLE
+    #     logger.info('FP16 activate, use apex FusedAdam')
+    #     try:
+    #         from apex.optimizers import FP16_Optimizer
+    #         from apex.optimizers import FusedAdam
+    #     except ImportError:
+    #         raise ImportError(
+    #             "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
-        optimizer = FusedAdam(optimizer_grouped_parameters,
-                              lr=args.learning_rate,
-                              bias_correction=False,
-                              max_grad_norm=1.0)
-        if args.loss_scale == 0:
-            optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
-        else:
-            optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
+    #     optimizer = FusedAdam(optimizer_grouped_parameters,
+    #                           lr=args.learning_rate,
+    #                           bias_correction=False,
+    #                           max_grad_norm=1.0)
+    #     if args.loss_scale == 0:
+    #         optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
+    #     else:
+    #         optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
+    # else:
+    #     logger.info('FP16 is not activated, use BertAdam')
+    #     optimizer = BertAdam(optimizer_grouped_parameters,
+    #                          lr=args.learning_rate,
+    #                          warmup=args.warmup_proportion,
+    #                          t_total=num_train_optimization_steps)
+    if args.fp16:
+        logger.info('FP16 activated, using native torch.cuda.amp')
+        # Use standard AdamW, modern replacement for BertAdam
+        optimizer = torch.optim.AdamW(optimizer_grouped_parameters,
+                                      lr=args.learning_rate,
+                                      eps=1e-6)
+        # Initialize the Scaler for mixed precision
+        scaler = GradScaler('cuda')
+        
     else:
         logger.info('FP16 is not activated, use BertAdam')
         optimizer = BertAdam(optimizer_grouped_parameters,
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
                              t_total=num_train_optimization_steps)
+        scaler = None # No scaler needed for FP32
 
 
 #########################################################################
@@ -245,6 +248,8 @@ if args.do_train:
         nb_tr_examples, nb_tr_steps = 0, 0
         for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
             batch = tuple(t.to(device) for t in batch)
+            
+            # 1. Unpack Batch (Removed manual .half() casts)
             if args.alpha == 0:
                 input_ids, input_mask, segment_ids, label_ids = batch
                 teacher_pred, teacher_patience = None, None
@@ -254,41 +259,45 @@ if args.do_train:
                     teacher_patience = None
                 else:
                     input_ids, input_mask, segment_ids, label_ids, teacher_pred, teacher_patience = batch
-                    if args.fp16:
-                        teacher_patience = teacher_patience.half()
-                if args.fp16:
-                    teacher_pred = teacher_pred.half()
+                    # Note: autocast handles mixed precision, so we don't need manual .half() here
 
-            # define a new function to compute loss values for both output_modes
-            full_output, pooled_output = student_encoder(input_ids, segment_ids, input_mask)
-            if args.kd_model.lower() in['kd', 'kd.cls']:
-                logits_pred_student = student_classifier(pooled_output)
-                if args.kd_model.lower() == 'kd.cls':
-                    student_patience = torch.stack(full_output[:-1]).transpose(0, 1)
+            # 2. Forward Pass (Wrapped in autocast)
+            with autocast('cuda',enabled=args.fp16):
+                full_output, pooled_output = student_encoder(input_ids, segment_ids, input_mask)
+                
+                if args.kd_model.lower() in ['kd', 'kd.cls']:
+                    logits_pred_student = student_classifier(pooled_output)
+                    if args.kd_model.lower() == 'kd.cls':
+                        student_patience = torch.stack(full_output[:-1]).transpose(0, 1)
+                    else:
+                        student_patience = None
+                elif args.kd_model.lower() == 'kd.full':
+                    logits_pred_student = student_classifier(full_output, weights, layer_idx)
                 else:
-                    student_patience = None
-            elif args.kd_model.lower() == 'kd.full':
-                logits_pred_student = student_classifier(full_output, weights, layer_idx)
-            else:
-                raise ValueError(f'{args.kd_model} not implemented yet')
+                    raise ValueError(f'{args.kd_model} not implemented yet')
 
-            loss_dl, kd_loss, ce_loss = distillation_loss(logits_pred_student, label_ids, teacher_pred, T=args.T, alpha=args.alpha)
-            if args.beta > 0:
-                if student_patience.shape[0] != input_ids.shape[0]:
-                    # For RACE
-                    n_layer = student_patience.shape[1]
-                    student_patience = student_patience.transpose(0, 1).contiguous().view(n_layer, input_ids.shape[0], -1).transpose(0,1)
-                pt_loss = args.beta * patience_loss(teacher_patience, student_patience, args.normalize_patience)
-                loss = loss_dl + pt_loss
-            else:
-                pt_loss = torch.tensor(0.0)
-                loss = loss_dl
+                loss_dl, kd_loss, ce_loss = distillation_loss(logits_pred_student, label_ids, teacher_pred, T=args.T, alpha=args.alpha)
+                
+                if args.beta > 0:
+                    if student_patience.shape[0] != input_ids.shape[0]:
+                        # For RACE logic
+                        n_layer = student_patience.shape[1]
+                        student_patience = student_patience.transpose(0, 1).contiguous().view(n_layer, input_ids.shape[0], -1).transpose(0,1)
+                    pt_loss = args.beta * patience_loss(teacher_patience, student_patience, args.normalize_patience)
+                    loss = loss_dl + pt_loss
+                else:
+                    pt_loss = torch.tensor(0.0)
+                    loss = loss_dl
 
-            if n_gpu > 1:
-                loss = loss.mean()  # mean() to average on multi-gpu.
+                if n_gpu > 1:
+                    loss = loss.mean()  # mean() to average on multi-gpu.
+
+            # 3. Backward Pass (Using Scaler)
+            if args.gradient_accumulation_steps > 1:
+                loss = loss / args.gradient_accumulation_steps
 
             if args.fp16:
-                optimizer.backward(loss)
+                scaler.scale(loss).backward()
             else:
                 loss.backward()
 
@@ -306,16 +315,20 @@ if args.do_train:
             nb_tr_examples += n_sample
             nb_tr_steps += 1
 
-            if args.gradient_accumulation_steps > 1:
-                loss = loss / args.gradient_accumulation_steps
-
+            # 4. Optimizer Step (Using Scaler)
             if (step + 1) % args.gradient_accumulation_steps == 0:
+                # Manual LR Schedule (Required because AdamW doesn't have internal scheduling like BertAdam)
                 if args.fp16:
                     lr_this_step = args.learning_rate * warmup_linear(global_step / num_train_optimization_steps,
                                                                       args.warmup_proportion)
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr_this_step
-                optimizer.step()
+                    
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                
                 optimizer.zero_grad()
                 global_step += 1
 
@@ -325,12 +338,24 @@ if args.do_train:
                                                        tr_ce_loss / nb_tr_examples, tr_loss_pt / nb_tr_examples),
                       file=log_train)
 
-        # Save a trained model and the associated configuration
+        # ============================================================
+        # EVALUATE ON DEV SET (Validation) - After Each Epoch
+        # This runs after every epoch to monitor training progress
+        # ============================================================
+        logger.info("=" * 80)
+        logger.info(f">>> EPOCH {epoch+1} - EVALUATING ON DEV SET (Validation) <<<")
+        logger.info("=" * 80)
+
         if 'race' in task_name:
             result = eval_model_dataloader(student_encoder, student_classifier, eval_dataloader, device, False)
         else:
             result = eval_model_dataloader_nli(args.task_name.lower(), eval_label_ids, student_encoder, student_classifier, eval_dataloader,
-                                               args.kd_model, num_labels, device, args.weights, args.fc_layer_idx, output_mode)
+                                               args.kd_model, num_labels, device, args.weights, args.fc_layer_idx, output_mode,
+                                               set_name="DEV")
+
+        logger.info(f"DEV SET Results (Epoch {epoch+1}): Accuracy = {result['acc']:.4f}, Loss = {result['eval_loss']:.4f}")
+        logger.info("=" * 80)
+
         if args.task_name in ['CoLA']:
             print('{},{},{}'.format(epoch+1, result['mcc'], result['eval_loss']), file=log_eval)
         else:
@@ -338,6 +363,8 @@ if args.do_train:
                 print('{},{},{}'.format(epoch+1, result['acc'], result['loss']), file=log_eval)
             else:
                 print('{},{},{}'.format(epoch+1, result['acc'], result['eval_loss']), file=log_eval)
+
+        # Save a trained model and the associated configuration
 
         if args.n_gpu > 1:
             torch.save(student_encoder.module.state_dict(), os.path.join(args.output_dir, output_model_file + f'_e.{epoch}.encoder.pkl'))
@@ -347,15 +374,25 @@ if args.do_train:
             torch.save(student_classifier.state_dict(), os.path.join(args.output_dir, output_model_file + f'_e.{epoch}.cls.pkl'))
 
 if args.do_eval:
-    if 'race' not in args.task_name:
-        result = eval_model_dataloader_nli(args.task_name.lower(), test_label_ids, student_encoder, student_classifier, test_dataloader,
-                                           args.kd_model, num_labels, device, args.weights, args.fc_layer_idx, output_mode)
-    else:
-        result = eval_model_dataloader(student_encoder, student_classifier, test_dataloader, device, False)
+    # ============================================================
+    # FINAL EVALUATION ON TEST SET
+    # This runs ONCE at the end of all training
+    # This is your FINAL performance metric
+    # ============================================================
+    logger.info("\n" + "=" * 80)
+    logger.info(">>> FINAL EVALUATION - TESTING ON TEST SET (Unseen Data) <<<")
+    logger.info("=" * 80)
+
+    result = eval_model_dataloader_nli(args.task_name.lower(), test_label_ids, student_encoder, student_classifier, test_dataloader,
+                                        args.kd_model, num_labels, device, args.weights, args.fc_layer_idx, output_mode,
+                                        set_name="TEST")
+
+    logger.info("\n" + "=" * 80)
+    logger.info("***** FINAL TEST SET RESULTS *****")
+    logger.info("=" * 80)
 
     output_test_file = os.path.join(args.output_dir, "test_results_" + output_model_file + '.txt')
     with open(output_test_file, "w") as writer:
-        logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s", key, str(result[key]))
             writer.write("%s = %s\n" % (key, str(result[key])))

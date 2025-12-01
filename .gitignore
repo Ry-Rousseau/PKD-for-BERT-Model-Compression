@@ -104,3 +104,4 @@ venv.bak/
 .mypy_cache/
 models/legal-bert-base/pytorch_model.bin
 models/legal-bert-small/pytorch_model.bin
+nul

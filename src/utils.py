@@ -112,9 +112,9 @@ def load_model(model, checkpoint, args, mode='exact', train_mode='finetune', ver
             print('*' * 77)
             print('kept keys =\n {}'.format('\n'.join(keep_keys)))
 
-    if args.fp16:
-        logger.info('fp16 activated, now call model.half()')
-        model.half()
+    # if args.fp16:
+    #     logger.info('fp16 activated, now call model.half()')
+    #     model.half()
     model.to(device)
 
     if train_mode != 'finetune':
@@ -235,7 +235,14 @@ def run_process(proc):
 
 
 def eval_model_dataloader_nli(task_name, eval_label_ids, encoder_bert, classifier, dataloader, kd_model, num_labels,
-                              device, weights=None, layer_idx=None, output_mode='classification'):
+                              device, weights=None, layer_idx=None, output_mode='classification', set_name="EVAL"):
+    """
+    Evaluate model on a dataset.
+
+    Args:
+        set_name: Name of the dataset being evaluated (e.g., "DEV", "TEST", "TRAIN")
+                  Used for clear diagnostic output
+    """
     encoder_bert.eval()
     classifier.eval()
 
@@ -275,10 +282,52 @@ def eval_model_dataloader_nli(task_name, eval_label_ids, encoder_bert, classifie
 
     eval_loss = eval_loss / nb_eval_steps
     preds = preds[0]
+
+    # ============================================================
+    # DIAGNOSTIC OUTPUT - Shows model predictions vs ground truth
+    # ============================================================
+    print("\n" + "="*80)
+    print(f"*** DIAGNOSTICS FOR {set_name} SET ***")
+    print("="*80)
+
+    # Show raw logits before argmax
+    print(f"\n[{set_name}] RAW LOGITS (before argmax) - First 5 examples:")
+    print("  Format: [class_0_score, class_1_score] -> predicted_class")
+    for i in range(min(5, len(preds))):
+        print(f"    Example {i}: {preds[i]} -> argmax={np.argmax(preds[i])}")
+
     if output_mode == "classification":
         preds = np.argmax(preds, axis=1)
     elif output_mode == "regression":
         preds = np.squeeze(preds)
+
+    print(f"\n[{set_name}] PREDICTIONS vs TRUE LABELS - First 10 examples:")
+    print(f"  Predictions: {preds[:10]}")
+    print(f"  True Labels: {eval_label_ids.numpy()[:10]}")
+
+    # Calculate match percentage for first 10
+    first_10_match = (preds[:10] == eval_label_ids.numpy()[:10]).sum()
+    print(f"  Match: {first_10_match}/10 correct ({100*first_10_match/10:.0f}%)")
+
+    # Show full prediction distribution
+    pred_dist = np.bincount(preds, minlength=2)
+    label_dist = np.bincount(eval_label_ids.numpy(), minlength=2)
+    total_samples = len(preds)
+
+    print(f"\n[{set_name}] FULL DISTRIBUTION ANALYSIS:")
+    print(f"  Total samples: {total_samples}")
+    print(f"  ┌─────────────┬────────────┬────────────┬──────────────┐")
+    print(f"  │    Class    │ Predicted  │ Actual     │   Ratio      │")
+    print(f"  ├─────────────┼────────────┼────────────┼──────────────┤")
+    print(f"  │ Class 0     │ {pred_dist[0]:>10} │ {label_dist[0]:>10} │ {100*pred_dist[0]/total_samples:>5.1f}% pred │")
+    print(f"  │ Class 1     │ {pred_dist[1]:>10} │ {label_dist[1]:>10} │ {100*pred_dist[1]/total_samples:>5.1f}% pred │")
+    print(f"  └─────────────┴────────────┴────────────┴──────────────┘")
+
+    # Calculate and show accuracy
+    accuracy = (preds == eval_label_ids.numpy()).sum() / total_samples
+    print(f"\n[{set_name}] ACCURACY: {accuracy:.4f} ({100*accuracy:.2f}%)")
+    print("="*80 + "\n")    
+    
     result = compute_metrics(task_name, preds, eval_label_ids.numpy())
     result['eval_loss'] = eval_loss
     return result
