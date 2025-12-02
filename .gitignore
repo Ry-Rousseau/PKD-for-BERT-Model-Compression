@@ -106,3 +106,4 @@ models/legal-bert-base/pytorch_model.bin
 models/legal-bert-small/pytorch_model.bin
 nul
 data/outputs/legal/
+data/models/pretrained/bert-base-uncased/pytorch_model.bin
