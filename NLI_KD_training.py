@@ -36,7 +36,7 @@ DEBUG = True
 if DEBUG:
     logger.info("IN DEBUG MODE")
     # run simple fune-tuning *teacher* by uncommenting below cmd
-    argv = get_predefine_argv('justice_legal_dataset', 'legal-bert-base', 'finetune_teacher', 12)
+    argv = get_predefine_argv('justice_legal_dataset', 'bert-base-uncased', 'finetune_teacher', 12)
     try:
         args = parser.parse_args(argv)
     except NameError:
@@ -358,7 +358,7 @@ if args.do_train:
             best_dev_loss = result['eval_loss']
             best_epoch = epoch
             patience_counter = 0
-            patience_limit = 3  # Stop if no improvement for 3 epochs
+            patience_limit = 4  # Stop if no improvement for 3 epochs
             logger.info(f"✓ Initialized best DEV accuracy: {best_dev_acc:.4f}")
         else:
             # Check if this epoch improved
